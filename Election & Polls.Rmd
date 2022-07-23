@@ -1,0 +1,46 @@
+---
+title: "Elections & Polls"
+output: html_notebook
+---
+
+We will use polling data organised by FiveThirtyEight for the 2016 presidential election. The data is included as part of the dslabs package. Once we load the data the first thing to do is to understand the data.
+```{r}
+library(dslabs)
+library(dplyr) # for data manipulation
+data(polls_us_election_2016)
+?polls_us_election_2016
+dim(polls_us_election_2016) #dimensions of the data (nxp)
+str(polls_us_election_2016) #structure of the data
+summary(polls_us_election_2016) #summary statistics for numerical variables
+```
+
+Looking at the data information from the R Documentation we see that we have results from national and state polls. We also see there is a grade assigned to each poll.
+
+We see that p = 15 and n = 4208, and polls cover 08 Nov 2015 to 07 Nov 2016 (enddate) which is effectively the year prior to the election.
+
+From the summary statistics we can see the presence of NAs. Let's visualise them:
+```{r}
+#The simplest function for visualising missing data is the vis_miss() function within the visdat package
+library(visdat)
+vis_miss(polls_us_election_2016) #can also add cluster = TRUE argument to see the missing data in clusters
+```
+
+For the first example, we will filter the data to only include national polls conducted during the week before the election (ie from 31 October 2016 onwards). We will also remove polls FiveThirtyEight has deemed unreliable and graded with a "B" or less. Note that from the visualisation above, we see there are NAs present in grade. We will include those without a grade.
+```{r}
+polls <- polls_us_election_2016 %>%
+  filter(state == "U.S." &
+           enddate >= "2016-10-31" &
+           (grade %in% c("A+", "A", "A-", "B+") | is.na(grade)))
+dim(polls)
+```
+
+This filtration reduced our n to 49 across 15 variables.
+
+For our ultimate prediction of election results, we are really interested in the spread (ie the difference between % poll results for each candidate). Since rawpoll results for Johnson and McMullin are largely NA, we can focus on Clinton vs Trump.
+
+So let's calculate the estimated spread for combined polls. We can then add this as a new column called "spread" to the "polls" we created above:
+```{r}
+polls <- polls %>%
+  mutate(spread = rawpoll_clinton/100 - rawpoll_trump/100)
+```
+
