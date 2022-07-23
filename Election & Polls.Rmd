@@ -4,9 +4,11 @@ output: html_notebook
 ---
 
 We will use polling data organised by FiveThirtyEight for the 2016 presidential election. The data is included as part of the dslabs package. Once we load the data the first thing to do is to understand the data.
+
 ```{r}
 library(dslabs)
 library(dplyr) # for data manipulation
+library(ggplot2) # for visualisations
 data(polls_us_election_2016)
 ?polls_us_election_2016
 dim(polls_us_election_2016) #dimensions of the data (nxp)
@@ -14,18 +16,22 @@ str(polls_us_election_2016) #structure of the data
 summary(polls_us_election_2016) #summary statistics for numerical variables
 ```
 
+
 Looking at the data information from the R Documentation we see that we have results from national and state polls. We also see there is a grade assigned to each poll.
 
 We see that p = 15 and n = 4208, and polls cover 08 Nov 2015 to 07 Nov 2016 (enddate) which is effectively the year prior to the election.
 
 From the summary statistics we can see the presence of NAs. Let's visualise them:
+
 ```{r}
 #The simplest function for visualising missing data is the vis_miss() function within the visdat package
 library(visdat)
 vis_miss(polls_us_election_2016) #can also add cluster = TRUE argument to see the missing data in clusters
 ```
 
+
 For the first example, we will filter the data to only include national polls conducted during the week before the election (ie from 31 October 2016 onwards). We will also remove polls FiveThirtyEight has deemed unreliable and graded with a "B" or less. Note that from the visualisation above, we see there are NAs present in grade. We will include those without a grade.
+
 ```{r}
 polls <- polls_us_election_2016 %>%
   filter(state == "U.S." &
@@ -34,13 +40,85 @@ polls <- polls_us_election_2016 %>%
 dim(polls)
 ```
 
+
 This filtration reduced our n to 49 across 15 variables.
 
-For our ultimate prediction of election results, we are really interested in the spread (ie the difference between % poll results for each candidate). Since rawpoll results for Johnson and McMullin are largely NA, we can focus on Clinton vs Trump.
+For our ultimate prediction of election results, we are really interested in the spread (ie the difference between % poll results for each candidate). Since rawpoll results for Johnson and McMullin are largely NA, we will ignore them and assume only 2 candidates: Clinton vs Trump. We can designate Clinton's proportion as p and Trump's as 1-p. So we are interested in the spread: 2p-1
 
 So let's calculate the estimated spread for combined polls. We can then add this as a new column called "spread" to the "polls" we created above:
+
 ```{r}
 polls <- polls %>%
   mutate(spread = rawpoll_clinton/100 - rawpoll_trump/100)
 ```
+
+We now have 49 different estimates of the spread from 49 different polls. We assume that these estimates are a random variable with a probability distribution that is approximately normal. What this assumption means is that the expected value of the election night spread = difference = d = 2p-1, and the standard error is 2*sqrt(p(1-p)/n)
+
+If this assumption holds, then we can construct a confidence interval based on the aggregate data. The estimated spread is now computed like this because now the sample size is the sum of all the sample sizes.
+
+```{r}
+#Estimating spread of aggregated polls. Spread = difference = d
+
+d_hat <- polls %>%
+  summarise(d_hat = sum(spread * samplesize)/sum(samplesize))
+d_hat
+
+```
+
+Our estimated spread of the aggregate data is approximately 0.0143 or 1.43%. We can calculate the standard error of this next:
+
+```{r}
+p_hat <- (d_hat + 1)/2 #estimated proportion of Clinton obtained from d_hat = 2p-1
+
+#standard error = 2*sqrt(p*(1-p)/n)
+p_hat_se <- 2*sqrt(p_hat*(1-p_hat)/sum(polls$samplesize))
+
+#Confidence Interval of standard error:
+CI_p_hat_se <- qnorm(0.975)*p_hat_se #2-tailed normal distribution - more accurate than using 1.96 straight
+
+CI_p_hat_se
+```
+
+So if we were going to use this data, we would report a spread of 1.43% +/- 0.66%.
+
+When we look at the actual outcome on the election night we'd discover that the real spread was 2.1% which is outside of the 95% confidence interval (1.43% + 0.66% = 2.09%). 
+
+What happened?
+
+To check we can look at the histogram of the spreads reported by the polls:
+
+```{r}
+# Histogram of reported spreads
+polls %>%
+  ggplot(aes(spread)) +
+  geom_histogram(colour = "black", binwidth = 0.01)
+```
+
+
+From histogram, it is clear that the data is not Gaussian, and the standard error appears to be larger than 0.0066 we estimated. The theory is not quite working here.
+
+One reason for this can be pollster bias.
+
+Various pollsters are involved and some are taking several polls a week. We can look at the number of polls each pollsters took the last week leading up to the election:
+
+```{r}
+polls %>% group_by(pollster) %>% summarise(n())
+```
+
+
+Lets look at the spreads by pollsters that polls frequently. Let's filter for pollsters that polled at least 6 times, and then plot the spreads estimated by each pollster:
+
+```{r}
+polls %>% group_by(pollster) %>%
+  filter(n() >= 6) %>%
+  ggplot(aes(pollster, spread)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+This is unusual. Technically, all the pollsters should have the same expected value but clearly this is not the case. While Ipsos predicts a larger than 5% Clinton win, USC/LA Times predicts a 4% Trump win. FiveThirtyEight refers to these differences as "house effects"; we call them "pollster bias".
+
+We will instead develop a data-driven model now to produce a better estimate and a better confidence interval.
+
 
