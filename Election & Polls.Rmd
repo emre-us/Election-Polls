@@ -60,7 +60,8 @@ If this assumption holds, then we can construct a confidence interval based on t
 #Estimating spread of aggregated polls. Spread = difference = d
 
 d_hat <- polls %>%
-  summarise(d_hat = sum(spread * samplesize)/sum(samplesize))
+  summarise(d_hat = sum(spread * samplesize)/sum(samplesize)) %>%
+  pull(d_hat)
 d_hat
 
 ```
@@ -121,4 +122,53 @@ This is unusual. Technically, all the pollsters should have the same expected va
 
 We will instead develop a data-driven model now to produce a better estimate and a better confidence interval.
 
+For each pollster lets collect their last reported result before the election:
+
+```{r}
+one_poll_per_pollster <- polls %>%
+  group_by(pollster) %>%
+  filter(enddate == max(enddate)) %>%
+  ungroup()
+```
+
+
+Let's then look at the histogram of the spread for these 15 pollsters:
+```{r}
+qplot(spread,
+      data = one_poll_per_pollster,
+      binwidth = 0.01)
+```
+
+Now we will model this spread directly.
+
+The expected value of the spread is still d = 2p-1. However, because we are drawing from sample poll results from all possible pollsters and not discreet in 0s (Republicans) and 1s (Democrats), we are looking at continuous numbers between -1 and 1. This means, the standard deviation is no longer sqrt(p*(1-p)). This is because, the standard error now also includes the pollster-to-pollster variability, and not just voter sampling variability. So, now, the standard deviation is an unknown parameter, sigma.
+
+In summary we have two unknown parameters now:
+1. The expected value d = 2p-1
+2. standard deviation, sigma.
+
+Our task is to estimate d.
+
+We don't know sigma but we can estimate sample standard deviation, s. The sd() function computes the sample standard deviation, s:
+
+```{r}
+sd(one_poll_per_pollster$spread)
+```
+
+We are now ready to form a new confidence interval based on our new data-driven model. We simply use Central Limit Theorem and create CI:
+
+```{r}
+results <- one_poll_per_pollster %>%
+  summarise(avg = mean(spread),
+            se = sd(spread) / sqrt(length(spread))) %>%
+  mutate(lower = avg - qnorm(0.975) * se,
+         upper = avg + qnorm(0.975) * se)
+round(results * 100, 1)
+```
+
+We get an average of 2.9% with an se of 0.6% and a CI from 1.7% to 4.1%. This interval includes the election night result of 2.1%. The CI is also small enough not to include 0%, so we would have been quite confident Clinton would win the popular vote. 
+
+However, we are not ready to declare a probability of Clinton winning the popular vote. This is because in our model so far d has been a fixed parameter, so we can't talk about probabilities.
+
+We have to utilise Bayesian statistics.
 
