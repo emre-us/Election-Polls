@@ -129,6 +129,7 @@ one_poll_per_pollster <- polls %>%
   group_by(pollster) %>%
   filter(enddate == max(enddate)) %>%
   ungroup()
+one_poll_per_pollster
 ```
 
 
@@ -172,3 +173,191 @@ However, we are not ready to declare a probability of Clinton winning the popula
 
 We have to utilise Bayesian statistics.
 
+For the 2016 election, FiveThirtyEight gave Clinton an 81.4% chance of winning the popular vote. To do this they used the Bayesian approach we described.
+
+We are going to assume a hierarchical model. This means we will assume:
+--> d is normally distributed around mu with a standard deviation of tau.(Prior distribution). This describes our best guess had we not seen any polling data.
+--> X_bar, conditional on d being known, is normally distributed around d with a standard deviation of sigma. (Sampling distribution). This describes randomness due to sampling and the pollster effect.
+
+This is referred to as a hierarchical model because we need to know d, the first model, in order to model X_bar, the second level. In Bayesian framework, the first level is called Prior Distribution and the second Sampling Distribution.
+
+For the best guess - before any poll data is available - we can use data sources other than polling data. A popular approach is to use what pollsters call fundamentals, which are based on properties about the current economy that historically appear to have an effect in favour or against the incumbent party. But we will not use this here.
+
+Instead we will use: 
+--> mu = 0, which is interpreted as a model that simply does not provide any information on who will win.
+--> tau = 0.035 which is derived from recent historical data that shows the winner of popular vote has an average spread of about 3.5%.
+
+With this we can compute a posterior distribution to summarise our prediction of p. The continuous version of Bayes' rule can be used to here to derive the posterior probability function, which is the distribution of d assuming we observe X=x. In our case, we can show that when we fix Y=y, d follows a normal distribution with expected value:
+
+$ E(p|Y=y) = B\mu + (1-B)y = \mu + (1-B)(y-\mu) $
+where
+$ B = \sigma^2  / (\sigma^2 + tau^2) $
+
+Now we can use the formulas for the posterior distribution for the parameter d:
+the probability of d>0 given the observed poll data:
+```{r}
+mu <- 0
+tau <- 0.035
+sigma <- results$se
+Y <- results$avg
+B <- sigma^2 / (sigma^2 + tau^2)
+
+posterior_mean <- B*mu + (1-B)*Y
+posterior_se <- sqrt(1/(1/sigma^2 + 1/tau^2))
+
+posterior_mean
+posterior_se
+```
+
+
+To make a probability statement we use the fact that the posterior distribution is also normal. So one thing we can do is report what is called a credible interval, ie. 95% confidence interval. Note that this interval is still random.
+
+```{r}
+posterior_mean + c(-qnorm(.975), qnorm(.975)) * posterior_se
+```
+
+So the interval goes from 1.6% to 4.01. What is interesting to report, however, is the probability of d > 0 given our estimate [Pr(d>0 | X_bar)].
+
+```{r}
+1-pnorm(0, posterior_mean, posterior_se)
+```
+
+This says 99.99% sure Clinton will win the popular vote, which seems overconfident. Also it is not in agreement with FiveThirtyEight's 81.4%. What explains the difference?
+
+After elections are over, one can look at the difference between pollster predictions and actual result. An important observation that our model does not take into account is that it is common to see a general bias that affects many pollsters in the same way making the observed data correlated. There is no good explanation for this, but we do observe it in historical data: in one election, the average of polls favors Democrats by 2%, then in the following election they favor Republicans by 1%, then in the next election there is no bias, then in the following one Republicans are favored by 3%, and so on. In 2016, the polls were biased in favor of the Democrats by 1-2%.
+
+Although we know this bias term affects our polls, we have no way of knowing what this bias is until election night. So we can’t correct our polls accordingly. What we can do is include a term in our model that accounts for this variability.
+
+To understand what new term(s) to introduce into our model lets recap what our model is.
+
+Suppose we are collecting data from one pollster only and we assume there is no general bias. 
+
+The pollster collects several polls with a sample size N, so we observe several measurements of the spread X_1,...,X_j. The theory tells us that these random variables have expected value d and standard error of $ 2\sqrt{p(1-p)/N} $. If d = 2.1% and the sample size for these polls is 2,000, we can simulate j = 6 data points from this model:
+
+```{r}
+set.seed(3)
+J <- 6
+N <- 2000
+d <- 0.021
+p <- (d+1)/2
+X <- d + rnorm(J, mean = 0, 2*sqrt(p*(1-p)/N))
+```
+
+
+Now suppose we have J=6 data points from I=5 different pollsters. To represent this we need two indexes: one for pollster, and another for the polls each pollster takes. So our model becomes:
+
+$ X_{i,j} = d+\varepsilon_{i,j} $ where i = pollster, and j = poll
+
+To simulate the data we now have to loop through the pollsters:
+
+```{r}
+# Simulated data for 5 pollsters with 6 polls each
+I <- 5
+J <- 6
+N <- 2000
+X <- sapply(1:I, function(i){
+  d + rnorm(J, mean = 0, 2*sqrt(p*(1-p)/N))
+})
+```
+
+
+Lets now compare this simulated data to the actual data:
+
+```{r}
+#simlated data without bias vs actual data
+polls %>% group_by(pollster) %>% 
+  filter(n() >= 6) %>% 
+  ungroup() %>%
+  select(pollster, spread) %>%
+  mutate(type = "Observed data", pollster = as.character(pollster)) %>%
+  bind_rows(tibble(spread = as.vector(X) , 
+                      pollster = rep(as.character(1:I), each=J),
+                      type = "Simulated data")) %>%
+  mutate(type = factor(type, levels = c("Simulated data", "Observed data"))) %>%
+  ggplot(aes(pollster, spread)) + 
+  geom_point() + 
+  coord_flip() +
+  facet_wrap( ~ type, scales = "free_y")
+```
+
+The model above does not seem to capture the features of the actual data nor account for pollster-to-pollster variability. In the simulated data all pollsters seem to agree on the expected outcome which is not the case in the real world data.
+
+To fix this we add a new term for the pollster effect, h_i, to represent the bias of ith pollster. The model now becomes:
+
+$$ X_{i,j} = d + h_i + \varepsilon_{i,j} $$
+
+To simulate data from a specific pollster, we now need to draw an h_i and then add the errors. Here is how to do it for one pollster. We assume standard deviation of h is 0.025.
+
+```{r}
+#Model with pollster bias (house effect)
+I <- 5
+J <- 6
+N <- 2000
+d <- 0.021
+p <- (d+1)/2
+h <- rnorm(I, mean = 0, sd = 0.025)
+X <- sapply(1:I, function(i){
+  d + h[i] + rnorm(J, mean = 0, 2*sqrt(p*(1-p)/N))
+})
+```
+
+We can compare the simulated data to actual data again:
+
+```{r}
+data.frame(Spread = as.vector(X) , Pollster = as.factor(rep(1:I, each=J))) %>%
+  ggplot(aes(Pollster, Spread)) +
+  geom_point() +
+  scale_y_continuous(limit = c(-0.056, 0.092)) +
+  coord_flip()
+```
+
+Note that h_i is common to all observed spreads from a specific pollsters. h_i only differs among the pollsters, which explains why we can see the groups of points shift from pollster to pollster.
+
+In the above model we assumed the average pollster bias is 0 when we set the mean = 0 for h. This effectively assumes that for every pollster biased in favour of one party, there is another pollster in favour of the other party, with a standard deviation assumed to be 0.025.
+
+However, historically we see that every election has a general bias affecting all polls. We can observe this with the 2016 data, but if we collect historical data, we see that the average of polls misses by more than models like the one above predict. To see this, we would take the average of polls for each election year and compare it to the actual value. If we did this, we would see a difference with a standard deviation of between 2-3%. To incorporate this into the model, we can add another term, b, to account for this variability:
+
+$$ X_{i,j} = d + b + h_i + \varepsilon_{i,j} $$
+
+Here b is a random variable that accounts for the election-to-election variability. This random variable changes from election to election, but for any given election, it is the same for all pollsters and polls within on election. This is why it does not have indexes. 
+
+This implies that all random variables X_ij for an election year are correlated since they all have b in common.
+
+One way to interpret b is as the difference between the average of all polls from all pollsters and the actual results of the election. Because we don't know the actual result until after the election, we can't estimate b until after the election. However, we can estimate b from previous elections and study the distribution of these values. 
+
+Based on this approach we assume that, across election years, b has expected value 0 and the standard error is about 0.025.
+
+An implication of adding this term to the model is that the standard deviation for X_ij is actually higher than what we earlier called sigma, which combines the pollster variability and sample variability, and was estimated with:
+
+```{r}
+sd(one_poll_per_pollster$spread)
+```
+
+This estimate does not include the variability introduced by b. we have to add the general bias term.
+
+Note that now the sample average is
+
+$$ \bar{X} = d + b + \frac{1}{N}\sum_{i=1}^N X_i $$
+
+which implies that the standard deviation of X_bar is:
+
+$$ \sqrt{\sigma^2/N + \sigma_b^2} $$
+Since the same b is in every measurement, the average does not reduce the variability introduced by the b term. This is an important point: it does not matter how many polls you take, this bias does not get reduced.
+
+If we redo the Bayesian calculation taking this variability into account, we get a result much closer to FiveThirtyEight's:
+
+```{r}
+mu <- 0
+tau <- 0.035
+sigma <- sqrt(results$se^2 + 0.025^2) #this is the st.dev. of X_bar inclusive of general bias variability
+Y <- results$avg
+B <- sigma^2 / (sigma^2 + tau^2)
+
+posterior_mean <- B*mu + (1-B)*Y
+posterior_se <- sqrt(1/ (1/sigma^2 + 1/tau^2))
+
+1 - pnorm(q = 0, mean = posterior_mean, sd = posterior_se)
+
+```
+
+Note that sigma includes .025^2. That is the general bias variability. Once we do this we get a prob of Clinton winning the popular vote of 81.7%, much lower than the 99.99% we got previously.
